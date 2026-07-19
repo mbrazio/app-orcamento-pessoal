@@ -1,0 +1,350 @@
+'use client'
+
+import * as React from 'react'
+import { useTransactions, useCategories } from '@/hooks/use-finance'
+import { Button } from '@/components/ui/button'
+import { Select } from '@/components/ui/select'
+import {
+  FileSpreadsheet,
+  Download,
+  Calendar,
+  DollarSign,
+  TrendingUp,
+  TrendingDown,
+  Percent,
+  Wallet,
+  Activity
+} from 'lucide-react'
+import jsPDF from 'jspdf'
+import html2canvas from 'html2canvas'
+
+export default function ReportsPage() {
+  const [mounted, setMounted] = React.useState(false)
+  
+  // Período selecionado
+  const now = new Date()
+  const [selectedMonth, setSelectedMonth] = React.useState<string>(String(now.getMonth()))
+  const [selectedYear, setSelectedYear] = React.useState<string>(String(now.getFullYear()))
+  const [isExporting, setIsExporting] = React.useState(false)
+
+  const { data: transactions = [], isLoading: txLoading } = useTransactions()
+  const { isLoading: catLoading } = useCategories()
+
+  React.useEffect(() => {
+    let active = true
+    if (active) {
+      setTimeout(() => {
+        setMounted(true)
+      }, 0)
+    }
+    return () => {
+      active = false
+    }
+  }, [])
+
+  // Filtrar transações para o mês/ano selecionados
+  const filteredTxs = React.useMemo(() => {
+    return transactions.filter((t) => {
+      const tDate = new Date(t.date + 'T00:00:00')
+      return tDate.getFullYear() === Number(selectedYear) && tDate.getMonth() === Number(selectedMonth)
+    })
+  }, [transactions, selectedMonth, selectedYear])
+
+  if (!mounted || txLoading || catLoading) {
+    return (
+      <div className="flex h-[70vh] items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    )
+  }
+
+  // Cálculos de Resumo
+  const totalIncome = filteredTxs
+    .filter((t) => t.type === 'income')
+    .reduce((sum, t) => sum + t.amount, 0)
+
+  const totalExpense = filteredTxs
+    .filter((t) => t.type === 'expense')
+    .reduce((sum, t) => sum + t.amount, 0)
+
+  const balance = totalIncome - totalExpense
+  const savingsRate = totalIncome > 0 ? ((totalIncome - totalExpense) / totalIncome) * 100 : 0
+
+  // Agrupar gastos por categoria
+  const expensesByCategory = filteredTxs
+    .filter((t) => t.type === 'expense')
+    .reduce((acc: { [key: string]: { name: string; amount: number; color: string; limit: number | null } }, t) => {
+      const catName = t.categories?.name || 'Sem Categoria'
+      const catColor = t.categories?.color || '#888'
+      const catLimit = t.categories?.budget_limit || null
+
+      if (!acc[catName]) {
+        acc[catName] = { name: catName, amount: 0, color: catColor, limit: catLimit }
+      }
+      acc[catName].amount += t.amount
+      return acc
+    }, {})
+
+  const categorySummaryList = Object.values(expensesByCategory).sort((a, b) => b.amount - a.amount)
+
+  // Formatação
+  const formatCurrency = (value: number) => {
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)
+  }
+
+  const formatDate = (dateStr: string) => {
+    const parts = dateStr.split('-')
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`
+    }
+    return dateStr
+  }
+
+  // Exportar PDF via html2canvas + jsPDF
+  const exportPDF = async () => {
+    const element = document.getElementById('report-content')
+    if (!element) return
+
+    setIsExporting(true)
+    // Delay curto para renderizar atualizações do DOM e remover botões
+    await new Promise((resolve) => setTimeout(resolve, 300))
+
+    try {
+      const isLight = document.documentElement.classList.contains('light')
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: isLight ? '#ffffff' : '#0a0a0a',
+        logging: false
+      })
+
+      const imgData = canvas.toDataURL('image/png')
+      const pdf = new jsPDF('p', 'mm', 'a4')
+      const imgWidth = 190 // Largura A4 útil em mm (com margem de 10mm de cada lado)
+      const imgHeight = (canvas.height * imgWidth) / canvas.width
+      
+      pdf.addImage(imgData, 'PNG', 10, 10, imgWidth, imgHeight)
+      
+      pdf.save(`relatorio-FinanceFlow-${Number(selectedMonth) + 1}-${selectedYear}.pdf`)
+    } catch (e) {
+      console.error('Erro ao gerar relatório PDF:', e)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  const months = [
+    { value: '0', label: 'Janeiro' },
+    { value: '1', label: 'Fevereiro' },
+    { value: '2', label: 'Março' },
+    { value: '3', label: 'Abril' },
+    { value: '4', label: 'Maio' },
+    { value: '5', label: 'Junho' },
+    { value: '6', label: 'Julho' },
+    { value: '7', label: 'Agosto' },
+    { value: '8', label: 'Setembro' },
+    { value: '9', label: 'Outubro' },
+    { value: '10', label: 'Novembro' },
+    { value: '11', label: 'Dezembro' },
+  ]
+
+  const years = Array.from({ length: 5 }, (_, i) => {
+    const y = now.getFullYear() - 2 + i
+    return { value: String(y), label: String(y) }
+  })
+
+  const currentMonthLabel = months.find((m) => m.value === selectedMonth)?.label || ''
+
+  return (
+    <div className="space-y-6">
+      {/* Barra de Ações (Filtros e Exportar) */}
+      <div className="glass-card rounded-xl p-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between select-none">
+        <div className="flex flex-wrap gap-4 items-end flex-1">
+          <Select
+            label="Mês do Relatório"
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(e.target.value)}
+            options={months}
+            className="w-40"
+          />
+
+          <Select
+            label="Ano do Relatório"
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(e.target.value)}
+            options={years}
+            className="w-32"
+          />
+        </div>
+
+        <Button onClick={exportPDF} disabled={isExporting || filteredTxs.length === 0}>
+          <Download className="h-4 w-4 mr-2" />
+          {isExporting ? 'Gerando...' : 'Exportar Relatório PDF'}
+        </Button>
+      </div>
+
+      {/* ÁREA DO CONTEÚDO DO RELATÓRIO A SER IMPRESSO */}
+      {filteredTxs.length > 0 ? (
+        <div
+          id="report-content"
+          className="rounded-2xl border border-border/60 bg-card/25 p-8 md:p-10 shadow-lg space-y-8 min-h-[1000px] flex flex-col justify-between"
+        >
+          {/* Header do Relatório */}
+          <div className="flex items-center justify-between pb-6 border-b border-border/50">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-primary/15 p-2 text-primary">
+                <Wallet className="h-6 w-6" />
+              </div>
+              <div>
+                <h2 className="text-xl font-bold tracking-tight">FinanceFlow</h2>
+                <p className="text-xs text-muted-foreground">Relatório Financeiro Mensal</p>
+              </div>
+            </div>
+            <div className="text-right text-xs text-muted-foreground">
+              <p>Período: {currentMonthLabel} de {selectedYear}</p>
+              <p>Emitido em: {now.toLocaleDateString('pt-BR')}</p>
+            </div>
+          </div>
+
+          {/* Cards de Métricas */}
+          <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
+            {/* Receitas */}
+            <div className="border border-border/50 rounded-xl p-4 bg-card/30 flex flex-col gap-1">
+              <div className="flex items-center justify-between text-xs text-muted-foreground font-semibold">
+                <span>Receitas</span>
+                <TrendingUp className="h-4 w-4 text-emerald-500" />
+              </div>
+              <span className="text-lg font-bold text-emerald-500 mt-1">{formatCurrency(totalIncome)}</span>
+            </div>
+
+            {/* Despesas */}
+            <div className="border border-border/50 rounded-xl p-4 bg-card/30 flex flex-col gap-1">
+              <div className="flex items-center justify-between text-xs text-muted-foreground font-semibold">
+                <span>Despesas</span>
+                <TrendingDown className="h-4 w-4 text-rose-500" />
+              </div>
+              <span className="text-lg font-bold text-rose-500 mt-1">{formatCurrency(totalExpense)}</span>
+            </div>
+
+            {/* Saldo Final */}
+            <div className="border border-border/50 rounded-xl p-4 bg-card/30 flex flex-col gap-1">
+              <div className="flex items-center justify-between text-xs text-muted-foreground font-semibold">
+                <span>Saldo Líquido</span>
+                <DollarSign className="h-4 w-4 text-primary" />
+              </div>
+              <span className={`text-lg font-bold mt-1 ${balance >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                {formatCurrency(balance)}
+              </span>
+            </div>
+
+            {/* Poupança */}
+            <div className="border border-border/50 rounded-xl p-4 bg-card/30 flex flex-col gap-1">
+              <div className="flex items-center justify-between text-xs text-muted-foreground font-semibold">
+                <span>Taxa de Economia</span>
+                <Percent className="h-4 w-4 text-amber-500" />
+              </div>
+              <span className="text-lg font-bold mt-1">
+                {savingsRate > 0 ? `${savingsRate.toFixed(1)}%` : '0.0%'}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-5 flex-1">
+            {/* Categorias e Limites (Breakdown) */}
+            <div className="md:col-span-2 space-y-4">
+              <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider flex items-center gap-2 select-none">
+                <Activity className="h-4 w-4 text-primary" />
+                Resumo por Categoria
+              </h3>
+              <div className="space-y-3.5 max-h-[400px] overflow-y-auto pr-2">
+                {categorySummaryList.map((cat, index) => {
+                  const limitPercent = cat.limit ? Math.min((cat.amount / cat.limit) * 100, 100) : 0
+                  return (
+                    <div key={index} className="space-y-1.5 text-xs">
+                      <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-2">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: cat.color }} />
+                          <span className="font-semibold">{cat.name}</span>
+                        </div>
+                        <span className="font-bold">{formatCurrency(cat.amount)}</span>
+                      </div>
+                      {cat.limit ? (
+                        <div className="space-y-1">
+                          <div className="w-full bg-muted h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${
+                                cat.amount > cat.limit ? 'bg-danger' : 'bg-primary'
+                              }`}
+                              style={{ width: `${limitPercent}%` }}
+                            />
+                          </div>
+                          <div className="flex justify-between text-[10px] text-muted-foreground">
+                            <span>Limite: {formatCurrency(cat.limit)}</span>
+                            <span className={cat.amount > cat.limit ? 'text-danger font-semibold' : ''}>
+                              {((cat.amount / cat.limit) * 100).toFixed(0)}% do limite
+                            </span>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Detalhamento das Transações do Mês */}
+            <div className="md:col-span-3 space-y-4">
+              <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider flex items-center gap-2 select-none">
+                <FileSpreadsheet className="h-4 w-4 text-primary" />
+                Histórico de Transações
+              </h3>
+              <div className="border border-border/50 rounded-xl overflow-hidden bg-card/10 text-xs">
+                <div className="max-h-[400px] overflow-y-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-border/50 bg-card/30 font-semibold text-muted-foreground select-none">
+                        <th className="p-3">Data</th>
+                        <th className="p-3">Descrição</th>
+                        <th className="p-3">Categoria</th>
+                        <th className="p-3 text-right">Valor</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/20">
+                      {filteredTxs.map((tx) => (
+                        <tr key={tx.id}>
+                          <td className="p-3 text-muted-foreground whitespace-nowrap">{formatDate(tx.date)}</td>
+                          <td className="p-3 font-medium truncate max-w-[120px]">{tx.description}</td>
+                          <td className="p-3 text-muted-foreground">
+                            {tx.categories?.name || 'Sem Categoria'}
+                          </td>
+                          <td
+                            className={`p-3 text-right font-bold whitespace-nowrap ${
+                              tx.type === 'income' ? 'text-emerald-500' : 'text-rose-500'
+                            }`}
+                          >
+                            {tx.type === 'income' ? '+' : '-'} {formatCurrency(tx.amount)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Rodapé do PDF */}
+          <div className="pt-6 border-t border-border/50 flex justify-between items-center text-[10px] text-muted-foreground select-none">
+            <span>FinanceFlow Orçamento Pessoal © 2026</span>
+            <span>Gerado automaticamente pelo aplicativo</span>
+          </div>
+        </div>
+      ) : (
+        <div className="glass-card rounded-xl p-16 text-center text-muted-foreground select-none flex flex-col items-center gap-2">
+          <Calendar className="h-10 w-10 text-muted-foreground" />
+          <span className="text-sm">Nenhuma transação registrada neste período.</span>
+        </div>
+      )}
+    </div>
+  )
+}
