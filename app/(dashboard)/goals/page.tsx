@@ -11,7 +11,7 @@ import { Goal } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog } from '@/components/ui/dialog'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import * as z from 'zod'
 import {
@@ -23,18 +23,19 @@ import {
   CheckCircle2,
   CircleDollarSign
 } from 'lucide-react'
+import { formatCurrencyBRL, calculateGoalProgress, toDecimal } from '@/lib/finance-math'
 
 // Schema da Meta
 const goalSchema = z.object({
   name: z.string().min(2, 'O nome deve ter no mínimo 2 caracteres'),
-  target_amount: z.coerce.number().gt(0, 'O valor alvo deve ser maior que zero'),
+  target_amount: z.coerce.number().gt(0, 'O valor alvo deve ser um número positivo maior que zero'),
   deadline: z.string().min(1, 'Selecione um prazo limite'),
   color: z.string().min(1, 'Selecione uma cor'),
 })
 
 // Schema do Aporte
 const contributionSchema = z.object({
-  amount: z.coerce.number().gt(0, 'O valor do depósito deve ser maior que zero'),
+  amount: z.coerce.number().gt(0, 'O valor do depósito deve ser um número positivo maior que zero'),
   date: z.string().min(1, 'Selecione a data do depósito'),
   note: z.string().optional(),
 })
@@ -43,12 +44,12 @@ type GoalFormData = z.infer<typeof goalSchema>
 type ContributionFormData = z.infer<typeof contributionSchema>
 
 const AVAILABLE_COLORS = [
-  '#10B981', // Emerald
-  '#3B82F6', // Blue
-  '#8B5CF6', // Purple
-  '#F59E0B', // Amber
-  '#EC4899', // Pink
-  '#06B6D4', // Cyan
+  '#10B981',
+  '#3B82F6',
+  '#8B5CF6',
+  '#F59E0B',
+  '#EC4899',
+  '#06B6D4',
 ]
 
 export default function GoalsPage() {
@@ -69,7 +70,7 @@ export default function GoalsPage() {
     handleSubmit: handleGoalSubmit,
     reset: resetGoal,
     setValue: setGoalValue,
-    watch: watchGoal,
+    control: goalControl,
     formState: { errors: goalErrors },
   } = useForm({
     resolver: zodResolver(goalSchema),
@@ -81,7 +82,7 @@ export default function GoalsPage() {
     },
   })
 
-  const selectedColor = watchGoal('color')
+  const selectedColor = useWatch({ control: goalControl, name: 'color' })
 
   // Formulário de Aporte
   const {
@@ -120,10 +121,13 @@ export default function GoalsPage() {
 
   const onGoalSubmit = async (data: GoalFormData) => {
     try {
-      await addGoalMutation.mutateAsync(data)
+      await addGoalMutation.mutateAsync({
+        ...data,
+        target_amount: toDecimal(data.target_amount).abs().toNumber(),
+      })
       setIsAddOpen(false)
-    } catch (e) {
-      console.error(e)
+    } catch {
+      // Silencioso sem console.log
     }
   }
 
@@ -132,29 +136,24 @@ export default function GoalsPage() {
     try {
       await addContributionMutation.mutateAsync({
         goalId: selectedGoal.id,
-        amount: data.amount,
+        amount: toDecimal(data.amount).abs().toNumber(),
         date: data.date,
         note: data.note,
       })
       setIsDepositOpen(false)
-    } catch (e) {
-      console.error(e)
+    } catch {
+      // Silencioso sem console.log
     }
   }
 
   const onDeleteGoal = async (goal: Goal) => {
-    if (confirm(`Tem certeza que deseja excluir a meta "${goal.name}"?`)) {
+    if (confirm(`Deseja realmente arquivar a meta "${goal.name}"? O histórico de aportes será mantido no banco de dados.`)) {
       try {
         await deleteGoalMutation.mutateAsync(goal.id)
-      } catch (e) {
-        console.error(e)
+      } catch {
+        // Silencioso sem console.log
       }
     }
-  }
-
-  // Formatação
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)
   }
 
   const formatDate = (dateStr: string | null) => {
@@ -190,7 +189,7 @@ export default function GoalsPage() {
       ) : goals.length > 0 ? (
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {goals.map((goal) => {
-            const percent = Math.min((goal.current_amount / goal.target_amount) * 100, 100)
+            const percent = calculateGoalProgress(goal.current_amount, goal.target_amount)
             const isCompleted = percent >= 100
 
             return (
@@ -231,10 +230,10 @@ export default function GoalsPage() {
                 <div className="space-y-1 select-none">
                   <div className="flex items-baseline justify-between">
                     <span className="text-xs text-muted-foreground">Progresso</span>
-                    <span className="text-xs font-semibold text-muted-foreground">Alvo: {formatCurrency(goal.target_amount)}</span>
+                    <span className="text-xs font-semibold text-muted-foreground">Alvo: {formatCurrencyBRL(goal.target_amount)}</span>
                   </div>
                   <div className="flex items-baseline justify-between">
-                    <span className="text-xl font-bold">{formatCurrency(goal.current_amount)}</span>
+                    <span className="text-xl font-bold">{formatCurrencyBRL(goal.current_amount)}</span>
                     <span className="text-sm font-semibold" style={{ color: goal.color }}>
                       {percent.toFixed(0)}%
                     </span>
@@ -298,6 +297,7 @@ export default function GoalsPage() {
             <Input
               label="Valor Alvo (R$)"
               type="number"
+              step="0.01"
               placeholder="0,00"
               error={goalErrors.target_amount?.message}
               {...registerGoal('target_amount')}
@@ -311,7 +311,6 @@ export default function GoalsPage() {
             />
           </div>
 
-          {/* Seleção de Cores */}
           <div className="space-y-1.5 select-none">
             <label className="text-sm font-medium text-foreground/80 leading-none">Cor da Barra de Progresso</label>
             <div className="flex flex-wrap gap-2.5 pt-1">
@@ -353,7 +352,7 @@ export default function GoalsPage() {
               <p className="font-semibold text-muted-foreground">Progresso Atual:</p>
               <p className="text-foreground">
                 {selectedGoal
-                  ? `${formatCurrency(selectedGoal.current_amount)} de ${formatCurrency(selectedGoal.target_amount)}`
+                  ? `${formatCurrencyBRL(selectedGoal.current_amount)} de ${formatCurrencyBRL(selectedGoal.target_amount)}`
                   : ''}
               </p>
             </div>

@@ -17,11 +17,19 @@ import {
 } from 'lucide-react'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
+import {
+  calculateBalance,
+  calculateTotalIncome,
+  calculateTotalExpense,
+  calculateCategoryTotals,
+  calculateBudgetUsage,
+  formatCurrencyBRL,
+  toDecimal
+} from '@/lib/finance-math'
 
 export default function ReportsPage() {
   const [mounted, setMounted] = React.useState(false)
   
-  // Período selecionado
   const now = new Date()
   const [selectedMonth, setSelectedMonth] = React.useState<string>(String(now.getMonth()))
   const [selectedYear, setSelectedYear] = React.useState<string>(String(now.getFullYear()))
@@ -42,7 +50,6 @@ export default function ReportsPage() {
     }
   }, [])
 
-  // Filtrar transações para o mês/ano selecionados
   const filteredTxs = React.useMemo(() => {
     return transactions.filter((t) => {
       const tDate = new Date(t.date + 'T00:00:00')
@@ -58,39 +65,18 @@ export default function ReportsPage() {
     )
   }
 
-  // Cálculos de Resumo
-  const totalIncome = filteredTxs
-    .filter((t) => t.type === 'income')
-    .reduce((sum, t) => sum + t.amount, 0)
+  // Cálculos de Resumo com Decimal.js
+  const totalIncomeDec = calculateTotalIncome(filteredTxs)
+  const totalExpenseDec = calculateTotalExpense(filteredTxs)
+  const balanceDec = calculateBalance(filteredTxs)
+  
+  const savingsRate = totalIncomeDec.greaterThan(0)
+    ? balanceDec.dividedBy(totalIncomeDec).times(100).toNumber()
+    : 0
 
-  const totalExpense = filteredTxs
-    .filter((t) => t.type === 'expense')
-    .reduce((sum, t) => sum + t.amount, 0)
-
-  const balance = totalIncome - totalExpense
-  const savingsRate = totalIncome > 0 ? ((totalIncome - totalExpense) / totalIncome) * 100 : 0
-
-  // Agrupar gastos por categoria
-  const expensesByCategory = filteredTxs
-    .filter((t) => t.type === 'expense')
-    .reduce((acc: { [key: string]: { name: string; amount: number; color: string; limit: number | null } }, t) => {
-      const catName = t.categories?.name || 'Sem Categoria'
-      const catColor = t.categories?.color || '#888'
-      const catLimit = t.categories?.budget_limit || null
-
-      if (!acc[catName]) {
-        acc[catName] = { name: catName, amount: 0, color: catColor, limit: catLimit }
-      }
-      acc[catName].amount += t.amount
-      return acc
-    }, {})
-
-  const categorySummaryList = Object.values(expensesByCategory).sort((a, b) => b.amount - a.amount)
-
-  // Formatação
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)
-  }
+  // Agrupar gastos por categoria usando Decimal.js
+  const categoryTotalsMap = calculateCategoryTotals(filteredTxs)
+  const categorySummaryList = Object.values(categoryTotalsMap).sort((a, b) => b.amount.minus(a.amount).toNumber())
 
   const formatDate = (dateStr: string) => {
     const parts = dateStr.split('-')
@@ -100,13 +86,11 @@ export default function ReportsPage() {
     return dateStr
   }
 
-  // Exportar PDF via html2canvas + jsPDF
   const exportPDF = async () => {
     const element = document.getElementById('report-content')
     if (!element) return
 
     setIsExporting(true)
-    // Delay curto para renderizar atualizações do DOM e remover botões
     await new Promise((resolve) => setTimeout(resolve, 300))
 
     try {
@@ -120,14 +104,14 @@ export default function ReportsPage() {
 
       const imgData = canvas.toDataURL('image/png')
       const pdf = new jsPDF('p', 'mm', 'a4')
-      const imgWidth = 190 // Largura A4 útil em mm (com margem de 10mm de cada lado)
+      const imgWidth = 190
       const imgHeight = (canvas.height * imgWidth) / canvas.width
       
       pdf.addImage(imgData, 'PNG', 10, 10, imgWidth, imgHeight)
       
       pdf.save(`relatorio-FinanceFlow-${Number(selectedMonth) + 1}-${selectedYear}.pdf`)
-    } catch (e) {
-      console.error('Erro ao gerar relatório PDF:', e)
+    } catch {
+      // Silencioso sem console.log
     } finally {
       setIsExporting(false)
     }
@@ -157,7 +141,7 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Barra de Ações (Filtros e Exportar) */}
+      {/* Barra de Ações */}
       <div className="glass-card rounded-xl p-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between select-none">
         <div className="flex flex-wrap gap-4 items-end flex-1">
           <Select
@@ -214,7 +198,7 @@ export default function ReportsPage() {
                 <span>Receitas</span>
                 <TrendingUp className="h-4 w-4 text-emerald-500" />
               </div>
-              <span className="text-lg font-bold text-emerald-500 mt-1">{formatCurrency(totalIncome)}</span>
+              <span className="text-lg font-bold text-emerald-500 mt-1">{formatCurrencyBRL(totalIncomeDec)}</span>
             </div>
 
             {/* Despesas */}
@@ -223,7 +207,7 @@ export default function ReportsPage() {
                 <span>Despesas</span>
                 <TrendingDown className="h-4 w-4 text-rose-500" />
               </div>
-              <span className="text-lg font-bold text-rose-500 mt-1">{formatCurrency(totalExpense)}</span>
+              <span className="text-lg font-bold text-rose-500 mt-1">{formatCurrencyBRL(totalExpenseDec)}</span>
             </div>
 
             {/* Saldo Final */}
@@ -232,8 +216,8 @@ export default function ReportsPage() {
                 <span>Saldo Líquido</span>
                 <DollarSign className="h-4 w-4 text-primary" />
               </div>
-              <span className={`text-lg font-bold mt-1 ${balance >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                {formatCurrency(balance)}
+              <span className={`text-lg font-bold mt-1 ${balanceDec.greaterThanOrEqualTo(0) ? 'text-emerald-500' : 'text-rose-500'}`}>
+                {formatCurrencyBRL(balanceDec)}
               </span>
             </div>
 
@@ -250,7 +234,7 @@ export default function ReportsPage() {
           </div>
 
           <div className="grid gap-6 md:grid-cols-5 flex-1">
-            {/* Categorias e Limites (Breakdown) */}
+            {/* Categorias e Limites */}
             <div className="md:col-span-2 space-y-4">
               <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider flex items-center gap-2 select-none">
                 <Activity className="h-4 w-4 text-primary" />
@@ -258,7 +242,8 @@ export default function ReportsPage() {
               </h3>
               <div className="space-y-3.5 max-h-[400px] overflow-y-auto pr-2">
                 {categorySummaryList.map((cat, index) => {
-                  const limitPercent = cat.limit ? Math.min((cat.amount / cat.limit) * 100, 100) : 0
+                  const limitPercent = calculateBudgetUsage(cat.amount, cat.limit)
+                  const isBlown = cat.limit ? cat.amount.greaterThan(toDecimal(cat.limit)) : false
                   return (
                     <div key={index} className="space-y-1.5 text-xs">
                       <div className="flex justify-between items-center">
@@ -266,22 +251,22 @@ export default function ReportsPage() {
                           <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: cat.color }} />
                           <span className="font-semibold">{cat.name}</span>
                         </div>
-                        <span className="font-bold">{formatCurrency(cat.amount)}</span>
+                        <span className="font-bold">{formatCurrencyBRL(cat.amount)}</span>
                       </div>
                       {cat.limit ? (
                         <div className="space-y-1">
                           <div className="w-full bg-muted h-1.5 rounded-full overflow-hidden">
                             <div
                               className={`h-full rounded-full ${
-                                cat.amount > cat.limit ? 'bg-danger' : 'bg-primary'
+                                isBlown ? 'bg-danger' : 'bg-primary'
                               }`}
-                              style={{ width: `${limitPercent}%` }}
+                              style={{ width: `${Math.min(limitPercent, 100)}%` }}
                             />
                           </div>
                           <div className="flex justify-between text-[10px] text-muted-foreground">
-                            <span>Limite: {formatCurrency(cat.limit)}</span>
-                            <span className={cat.amount > cat.limit ? 'text-danger font-semibold' : ''}>
-                              {((cat.amount / cat.limit) * 100).toFixed(0)}% do limite
+                            <span>Limite: {formatCurrencyBRL(cat.limit)}</span>
+                            <span className={isBlown ? 'text-danger font-semibold' : ''}>
+                              {limitPercent.toFixed(0)}% do limite
                             </span>
                           </div>
                         </div>
@@ -322,7 +307,7 @@ export default function ReportsPage() {
                               tx.type === 'income' ? 'text-emerald-500' : 'text-rose-500'
                             }`}
                           >
-                            {tx.type === 'income' ? '+' : '-'} {formatCurrency(tx.amount)}
+                            {tx.type === 'income' ? '+' : '-'} {formatCurrencyBRL(tx.amount)}
                           </td>
                         </tr>
                       ))}
@@ -333,7 +318,6 @@ export default function ReportsPage() {
             </div>
           </div>
 
-          {/* Rodapé do PDF */}
           <div className="pt-6 border-t border-border/50 flex justify-between items-center text-[10px] text-muted-foreground select-none">
             <span>FinanceFlow Orçamento Pessoal © 2026</span>
             <span>Gerado automaticamente pelo aplicativo</span>

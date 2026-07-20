@@ -22,6 +22,15 @@ import {
   Pie,
   Cell
 } from 'recharts'
+import {
+  calculateBalance,
+  calculateTotalIncome,
+  calculateTotalExpense,
+  calculateCategoryTotals,
+  calculateBudgetUsage,
+  formatCurrencyBRL,
+  toDecimal
+} from '@/lib/finance-math'
 
 export default function DashboardPage() {
   const [mounted, setMounted] = React.useState(false)
@@ -49,56 +58,40 @@ export default function DashboardPage() {
     )
   }
 
-  // Obter data atual e limites do mês atual
   const now = new Date()
   const currentYear = now.getFullYear()
-  const currentMonth = now.getMonth() // 0-11
+  const currentMonth = now.getMonth()
 
-  // Filtrar transações do mês atual
   const currentMonthTxs = transactions.filter((t) => {
     const tDate = new Date(t.date + 'T00:00:00')
     return tDate.getFullYear() === currentYear && tDate.getMonth() === currentMonth
   })
 
-  // Cálculos de Resumo
-  const totalIncome = currentMonthTxs
-    .filter((t) => t.type === 'income')
-    .reduce((sum, t) => sum + t.amount, 0)
+  // Cálculos de Resumo com Decimal.js
+  const totalIncomeDec = calculateTotalIncome(currentMonthTxs)
+  const totalExpenseDec = calculateTotalExpense(currentMonthTxs)
+  const balanceDec = calculateBalance(currentMonthTxs)
 
-  const totalExpense = currentMonthTxs
-    .filter((t) => t.type === 'expense')
-    .reduce((sum, t) => sum + t.amount, 0)
-
-  const balance = totalIncome - totalExpense
-
-  const savingsRate = totalIncome > 0 ? ((totalIncome - totalExpense) / totalIncome) * 100 : 0
+  const savingsRate = totalIncomeDec.greaterThan(0)
+    ? balanceDec.dividedBy(totalIncomeDec).times(100).toNumber()
+    : 0
 
   const topExpense = currentMonthTxs
     .filter((t) => t.type === 'expense')
-    .reduce((max, t) => (t.amount > max.amount ? t : max), { amount: 0, description: 'Nenhum' })
-
-  // Formatação em BRL (R$)
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)
-  }
+    .reduce((max, t) => (toDecimal(t.amount).greaterThan(toDecimal(max.amount)) ? t : max), {
+      amount: 0,
+      description: 'Nenhum',
+    })
 
   // Gráfico 1: Despesas por Categoria (PieChart)
-  const expenseByCategory = currentMonthTxs
-    .filter((t) => t.type === 'expense')
-    .reduce((acc: { [key: string]: { name: string; value: number; color: string } }, t) => {
-      const catName = t.categories?.name || 'Sem Categoria'
-      const catColor = t.categories?.color || '#9ca3af'
-      if (!acc[catName]) {
-        acc[catName] = { name: catName, value: 0, color: catColor }
-      }
-      acc[catName].value += t.amount
-      return acc
-    }, {})
-
-  const pieData = Object.values(expenseByCategory)
+  const categoryTotalsMap = calculateCategoryTotals(currentMonthTxs)
+  const pieData = Object.values(categoryTotalsMap).map((c) => ({
+    name: c.name,
+    value: c.amount.toNumber(),
+    color: c.color,
+  }))
 
   // Gráfico 2: Receitas vs Despesas dos Últimos 6 Meses (BarChart)
-  // Obter lista dos últimos 6 meses cronologicamente
   const last6Months = Array.from({ length: 6 }, (_, i) => {
     const d = new Date()
     d.setMonth(now.getMonth() - i)
@@ -115,8 +108,8 @@ export default function DashboardPage() {
       return tDate.getFullYear() === m.year && tDate.getMonth() === m.month
     })
 
-    const income = monthTxs.filter((t) => t.type === 'income').reduce((sum, t) => sum + t.amount, 0)
-    const expense = monthTxs.filter((t) => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0)
+    const income = calculateTotalIncome(monthTxs).toNumber()
+    const expense = calculateTotalExpense(monthTxs).toNumber()
 
     return {
       name: m.label.charAt(0).toUpperCase() + m.label.slice(1),
@@ -127,20 +120,21 @@ export default function DashboardPage() {
 
   // Alertas de limites estourados
   const categoryBudgets = categories
-    .filter((c) => c.budget_limit !== null && c.budget_limit > 0)
+    .filter((c) => c.budget_limit !== null && toDecimal(c.budget_limit).greaterThan(0))
     .map((c) => {
-      const spent = currentMonthTxs
-        .filter((t) => t.category_id === c.id && t.type === 'expense')
-        .reduce((sum, t) => sum + t.amount, 0)
+      const catTxs = currentMonthTxs.filter((t) => t.category_id === c.id)
+      const spentDec = calculateTotalExpense(catTxs)
+      const limitDec = toDecimal(c.budget_limit)
+      const percent = calculateBudgetUsage(spentDec, limitDec)
       return {
         ...c,
-        spent,
-        limit: c.budget_limit!,
-        percent: (spent / c.budget_limit!) * 100,
+        spent: spentDec,
+        limit: limitDec,
+        percent,
       }
     })
 
-  const blownBudgets = categoryBudgets.filter((b) => b.spent > b.limit)
+  const blownBudgets = categoryBudgets.filter((b) => b.spent.greaterThan(b.limit))
 
   return (
     <div className="space-y-8 select-none">
@@ -173,10 +167,10 @@ export default function DashboardPage() {
                   <span className="font-medium">{b.name}</span>
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  Limite: <span className="font-semibold">{formatCurrency(b.limit)}</span>
+                  Limite: <span className="font-semibold">{formatCurrencyBRL(b.limit)}</span>
                 </div>
                 <div className="text-xs text-danger">
-                  Gasto: <span className="font-semibold">{formatCurrency(b.spent)}</span>
+                  Gasto: <span className="font-semibold">{formatCurrencyBRL(b.spent)}</span>
                 </div>
               </div>
             ))}
@@ -184,7 +178,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* CARDS DE RESUMO (GLASSMORPHISM) */}
+      {/* CARDS DE RESUMO */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {/* Saldo Geral */}
         <div className="glass-card rounded-xl p-6 shadow-xs flex flex-col justify-between gap-4">
@@ -195,11 +189,11 @@ export default function DashboardPage() {
             </div>
           </div>
           <div>
-            <h3 className={`text-2xl font-bold tracking-tight ${balance >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-              {formatCurrency(balance)}
+            <h3 className={`text-2xl font-bold tracking-tight ${balanceDec.greaterThanOrEqualTo(0) ? 'text-emerald-500' : 'text-rose-500'}`}>
+              {formatCurrencyBRL(balanceDec)}
             </h3>
             <p className="text-xs text-muted-foreground mt-1">
-              {balance >= 0 ? 'Saldo positivo' : 'Saldo negativo'}
+              {balanceDec.greaterThanOrEqualTo(0) ? 'Saldo positivo' : 'Saldo negativo'}
             </p>
           </div>
         </div>
@@ -213,7 +207,7 @@ export default function DashboardPage() {
             </div>
           </div>
           <div>
-            <h3 className="text-2xl font-bold tracking-tight text-emerald-500">{formatCurrency(totalIncome)}</h3>
+            <h3 className="text-2xl font-bold tracking-tight text-emerald-500">{formatCurrencyBRL(totalIncomeDec)}</h3>
             <p className="text-xs text-muted-foreground mt-1">Ganhos acumulados este mês</p>
           </div>
         </div>
@@ -227,7 +221,7 @@ export default function DashboardPage() {
             </div>
           </div>
           <div>
-            <h3 className="text-2xl font-bold tracking-tight text-rose-500">{formatCurrency(totalExpense)}</h3>
+            <h3 className="text-2xl font-bold tracking-tight text-rose-500">{formatCurrencyBRL(totalExpenseDec)}</h3>
             <p className="text-xs text-muted-foreground mt-1">Gasto total no período</p>
           </div>
         </div>
@@ -245,7 +239,7 @@ export default function DashboardPage() {
               {savingsRate > 0 ? `${savingsRate.toFixed(1)}%` : '0.0%'}
             </h3>
             <p className="text-xs text-muted-foreground mt-1 truncate">
-              Maior Gasto: {topExpense.amount > 0 ? `${topExpense.description} (${formatCurrency(topExpense.amount)})` : 'Nenhum'}
+              Maior Gasto: {toDecimal(topExpense.amount).greaterThan(0) ? `${topExpense.description} (${formatCurrencyBRL(topExpense.amount)})` : 'Nenhum'}
             </p>
           </div>
         </div>
@@ -332,7 +326,7 @@ export default function DashboardPage() {
                   <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
                   <span className="font-medium truncate max-w-[120px]">{d.name}</span>
                 </div>
-                <span className="text-muted-foreground font-semibold">{formatCurrency(d.value)}</span>
+                <span className="text-muted-foreground font-semibold">{formatCurrencyBRL(d.value)}</span>
               </div>
             ))}
           </div>
@@ -358,7 +352,6 @@ export default function DashboardPage() {
                     {b.percent.toFixed(0)}%
                   </span>
                 </div>
-                {/* Progress bar */}
                 <div className="w-full bg-muted h-2 rounded-full overflow-hidden">
                   <div
                     className={`h-full transition-all duration-300 rounded-full ${
@@ -372,8 +365,8 @@ export default function DashboardPage() {
                   />
                 </div>
                 <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>Gasto: {formatCurrency(b.spent)}</span>
-                  <span>Limite: {formatCurrency(b.limit)}</span>
+                  <span>Gasto: {formatCurrencyBRL(b.spent)}</span>
+                  <span>Limite: {formatCurrencyBRL(b.limit)}</span>
                 </div>
               </div>
             ))}

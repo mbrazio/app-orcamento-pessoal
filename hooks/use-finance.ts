@@ -3,6 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createClient } from '@/lib/supabase/client'
 import { Category, Transaction, Goal } from '@/types'
+import { toDecimal } from '@/lib/finance-math'
 
 // Chaves de Consulta (Query Keys)
 export const financeKeys = {
@@ -31,6 +32,7 @@ export function useCategories() {
       const { data, error } = await supabase
         .from('categories')
         .select('*')
+        .is('deleted_at', null)
         .order('name', { ascending: true })
 
       if (error) throw error
@@ -84,7 +86,7 @@ export function useUpdateCategory() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: financeKeys.categories })
-      queryClient.invalidateQueries({ queryKey: ['transactions'] }) // Recarregar transações pois a categoria pode ter mudado
+      queryClient.invalidateQueries({ queryKey: ['transactions'] })
     },
   })
 }
@@ -95,9 +97,10 @@ export function useDeleteCategory() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      // Regra 1: Soft Delete (substituindo exclusão física por atualização de deleted_at)
       const { error } = await supabase
         .from('categories')
-        .delete()
+        .update({ deleted_at: new Date().toISOString() })
         .eq('id', id)
 
       if (error) throw error
@@ -128,6 +131,7 @@ export function useTransactions(filters?: {
       let query = supabase
         .from('transactions')
         .select('*, categories(*)')
+        .is('deleted_at', null)
         .order('date', { ascending: false })
         .order('created_at', { ascending: false })
 
@@ -235,9 +239,10 @@ export function useDeleteTransaction() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      // Regra 1: Soft Delete (substituindo exclusão física por atualização de deleted_at)
       const { error } = await supabase
         .from('transactions')
-        .delete()
+        .update({ deleted_at: new Date().toISOString() })
         .eq('id', id)
 
       if (error) throw error
@@ -261,6 +266,7 @@ export function useGoals() {
       const { data, error } = await supabase
         .from('goals')
         .select('*')
+        .is('deleted_at', null)
         .order('deadline', { ascending: true })
 
       if (error) throw error
@@ -325,9 +331,10 @@ export function useDeleteGoal() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      // Regra 1: Soft Delete (substituindo exclusão física por atualização de deleted_at)
       const { error } = await supabase
         .from('goals')
-        .delete()
+        .update({ deleted_at: new Date().toISOString() })
         .eq('id', id)
 
       if (error) throw error
@@ -339,7 +346,7 @@ export function useDeleteGoal() {
   })
 }
 
-// Adicionar Aporte/Contribuição e atualizar meta
+// Adicionar Aporte/Contribuição e atualizar meta usando Decimal.js
 export function useAddGoalContribution() {
   const queryClient = useQueryClient()
   const supabase = createClient()
@@ -365,7 +372,7 @@ export function useAddGoalContribution() {
 
       if (contribError) throw contribError
 
-      // 2. Buscar valor acumulado da meta e somar
+      // 2. Buscar valor acumulado da meta e somar com Decimal.js
       const { data: goal, error: goalFetchError } = await supabase
         .from('goals')
         .select('current_amount')
@@ -374,7 +381,7 @@ export function useAddGoalContribution() {
 
       if (goalFetchError) throw goalFetchError
 
-      const newCurrentAmount = Number(goal.current_amount) + amount
+      const newCurrentAmount = toDecimal(goal.current_amount).plus(toDecimal(amount)).toNumber()
 
       // 3. Atualizar o current_amount da meta
       const { error: goalUpdateError } = await supabase

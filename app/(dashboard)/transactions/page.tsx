@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Dialog } from '@/components/ui/dialog'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import * as z from 'zod'
 import {
@@ -27,11 +27,12 @@ import {
   FileUp,
   AlertTriangle
 } from 'lucide-react'
+import { formatCurrencyBRL, toDecimal } from '@/lib/finance-math'
 
 // Schema do formulário
 const transactionSchema = z.object({
   description: z.string().min(2, 'A descrição deve ter no mínimo 2 caracteres'),
-  amount: z.coerce.number().gt(0, 'O valor deve ser maior que zero'),
+  amount: z.coerce.number().gt(0, 'O valor deve ser um número positivo maior que zero'),
   type: z.enum(['income', 'expense']),
   category_id: z.string().min(1, 'Selecione uma categoria'),
   date: z.string().min(1, 'Selecione uma data'),
@@ -50,6 +51,13 @@ export default function TransactionsPage() {
   const [categoryFilter, setCategoryFilter] = React.useState('all')
   const [startDate, setStartDate] = React.useState('')
   const [endDate, setEndDate] = React.useState('')
+  const [currentPage, setCurrentPage] = React.useState(1)
+
+  const handleSearchChange = (val: string) => { setSearch(val); setCurrentPage(1); }
+  const handleTypeFilterChange = (val: 'all' | 'income' | 'expense') => { setTypeFilter(val); setCurrentPage(1); }
+  const handleCategoryFilterChange = (val: string) => { setCategoryFilter(val); setCurrentPage(1); }
+  const handleStartDateChange = (val: string) => { setStartDate(val); setCurrentPage(1); }
+  const handleEndDateChange = (val: string) => { setEndDate(val); setCurrentPage(1); }
   
   // Filtros aplicados para a query
   const queryFilters = React.useMemo(() => ({
@@ -74,21 +82,17 @@ export default function TransactionsPage() {
   const [selectedTx, setSelectedTx] = React.useState<Transaction | null>(null)
 
   // Paginação simples
-  const [currentPage, setCurrentPage] = React.useState(1)
   const itemsPerPage = 8
-  const totalPages = Math.ceil(transactions.length / itemsPerPage)
-  const paginatedTxs = transactions.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
-
-  React.useEffect(() => {
-    setCurrentPage(1)
-  }, [search, typeFilter, categoryFilter, startDate, endDate])
+  const totalPages = Math.max(1, Math.ceil(transactions.length / itemsPerPage))
+  const safeCurrentPage = Math.min(currentPage, totalPages)
+  const paginatedTxs = transactions.slice((safeCurrentPage - 1) * itemsPerPage, safeCurrentPage * itemsPerPage)
 
   // React Hook Form para cadastro/edição
   const {
     register,
     handleSubmit,
     reset,
-    watch,
+    control,
     formState: { errors },
   } = useForm({
     resolver: zodResolver(transactionSchema),
@@ -103,7 +107,7 @@ export default function TransactionsPage() {
     },
   })
 
-  const isRecurringValue = watch('is_recurring')
+  const isRecurringValue = useWatch({ control, name: 'is_recurring' })
 
   const openAddModal = () => {
     reset({
@@ -136,11 +140,12 @@ export default function TransactionsPage() {
     try {
       await addTxMutation.mutateAsync({
         ...data,
+        amount: toDecimal(data.amount).abs().toNumber(),
         recurrence_interval: data.is_recurring ? (data.recurrence_interval || 'monthly') : null,
       })
       setIsAddOpen(false)
-    } catch (e) {
-      console.error(e)
+    } catch {
+      // Tratar exceção sem expor detalhes
     }
   }
 
@@ -150,20 +155,21 @@ export default function TransactionsPage() {
       await updateTxMutation.mutateAsync({
         id: selectedTx.id,
         ...data,
+        amount: toDecimal(data.amount).abs().toNumber(),
         recurrence_interval: data.is_recurring ? (data.recurrence_interval || 'monthly') : null,
       })
       setIsEditOpen(false)
-    } catch (e) {
-      console.error(e)
+    } catch {
+      // Tratar exceção sem expor detalhes
     }
   }
 
   const onDelete = async (id: string) => {
-    if (confirm('Tem certeza que deseja excluir esta transação?')) {
+    if (confirm('Deseja realmente arquivar esta transação? Ela será removida da visualização sem perda histórica.')) {
       try {
         await deleteTxMutation.mutateAsync(id)
-      } catch (e) {
-        console.error(e)
+      } catch {
+        // Tratar exceção sem expor detalhes
       }
     }
   }
@@ -178,8 +184,8 @@ export default function TransactionsPage() {
   const [descCol, setDescCol] = React.useState<string>('-1')
   const [amountCol, setAmountCol] = React.useState<string>('-1')
   const [dateCol, setDateCol] = React.useState<string>('-1')
-  const [typeCol, setTypeCol] = React.useState<string>('-1') // Opcional (se não mapeado, assume 'expense')
-  const [catCol, setCatCol] = React.useState<string>('-1')   // Opcional (se não mapeado, assume a primeira categoria)
+  const [typeCol, setTypeCol] = React.useState<string>('-1')
+  const [catCol, setCatCol] = React.useState<string>('-1')
 
   const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -212,9 +218,8 @@ export default function TransactionsPage() {
 
       if (rows.length > 0) {
         setCsvHeaders(rows[0])
-        setCsvLines(rows.slice(1)) // Remove cabeçalho
+        setCsvLines(rows.slice(1))
         
-        // Tentar mapeamento automático
         const headersLower = rows[0].map(h => h.toLowerCase())
         setDescCol(String(headersLower.findIndex(h => h.includes('desc') || h.includes('nome') || h.includes('título'))))
         setAmountCol(String(headersLower.findIndex(h => h.includes('valor') || h.includes('quant') || h.includes('preço') || h.includes('amount'))))
@@ -240,16 +245,14 @@ export default function TransactionsPage() {
 
     let successCount = 0
 
-    // Mapear cada linha do CSV
     for (const line of csvLines) {
       if (line.length <= Math.max(dIdx, aIdx, dtIdx)) continue
 
       const rawDesc = line[dIdx]
-      // Remover símbolos de moeda e converter para número
-      const rawAmount = parseFloat(line[aIdx].replace(/[R$\s.]/g, '').replace(',', '.'))
+      const parsedVal = parseFloat(line[aIdx].replace(/[R$\s.]/g, '').replace(',', '.'))
+      const rawAmount = toDecimal(parsedVal).abs().toNumber()
       let rawDate = line[dtIdx]
 
-      // Ajustar formato da data (ex: DD/MM/YYYY para YYYY-MM-DD)
       if (rawDate.includes('/')) {
         const parts = rawDate.split('/')
         if (parts.length === 3) {
@@ -257,7 +260,6 @@ export default function TransactionsPage() {
         }
       }
 
-      // Tipo padrão
       let rawType: 'income' | 'expense' = 'expense'
       if (tIdx !== -1 && line[tIdx]) {
         const tVal = line[tIdx].toLowerCase()
@@ -266,7 +268,6 @@ export default function TransactionsPage() {
         }
       }
 
-      // Categoria padrão ou mapeada
       let rawCategoryId = categories[0]?.id
       if (cIdx !== -1 && line[cIdx]) {
         const catName = line[cIdx].toLowerCase().trim()
@@ -276,7 +277,7 @@ export default function TransactionsPage() {
         }
       }
 
-      if (rawDesc && !isNaN(rawAmount) && rawDate) {
+      if (rawDesc && !isNaN(rawAmount) && rawAmount > 0 && rawDate) {
         try {
           await addTxMutation.mutateAsync({
             description: rawDesc,
@@ -288,8 +289,8 @@ export default function TransactionsPage() {
             recurrence_interval: null
           })
           successCount++
-        } catch (e) {
-          console.error('Erro ao importar linha: ', line, e)
+        } catch {
+          // Tratar exceção sem expor detalhes
         }
       }
     }
@@ -298,11 +299,6 @@ export default function TransactionsPage() {
     setIsImportOpen(false)
     setCsvLines([])
     setCsvHeaders([])
-  }
-
-  // Formatação em BRL (R$)
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)
   }
 
   const formatDate = (dateStr: string) => {
@@ -335,27 +331,25 @@ export default function TransactionsPage() {
         </div>
       </div>
 
-      {/* BARRA DE FILTROS (GLASSMORPHISM) */}
+      {/* BARRA DE FILTROS */}
       <div className="glass-card rounded-xl p-4 grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-5 items-end">
-        {/* Busca */}
         <div className="space-y-1.5 md:col-span-2">
           <label className="text-xs font-semibold text-muted-foreground select-none">Buscar</label>
           <div className="relative">
             <Input
               placeholder="Ex: Supermercado, Aluguel..."
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className="pl-9"
             />
             <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
           </div>
         </div>
 
-        {/* Tipo */}
         <Select
           label="Tipo"
           value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value as 'all' | 'income' | 'expense')}
+          onChange={(e) => handleTypeFilterChange(e.target.value as 'all' | 'income' | 'expense')}
           options={[
             { value: 'all', label: 'Todos os tipos' },
             { value: 'income', label: 'Receitas' },
@@ -363,11 +357,10 @@ export default function TransactionsPage() {
           ]}
         />
 
-        {/* Categoria */}
         <Select
           label="Categoria"
           value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
+          onChange={(e) => handleCategoryFilterChange(e.target.value)}
         >
           <option value="all">Todas as categorias</option>
           {categories.map((c) => (
@@ -377,15 +370,14 @@ export default function TransactionsPage() {
           ))}
         </Select>
 
-        {/* Período */}
         <div className="flex gap-2 w-full md:col-span-1">
           <div className="w-full space-y-1.5">
             <label className="text-xs font-semibold text-muted-foreground select-none">Início</label>
-            <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            <Input type="date" value={startDate} onChange={(e) => handleStartDateChange(e.target.value)} />
           </div>
           <div className="w-full space-y-1.5">
             <label className="text-xs font-semibold text-muted-foreground select-none">Fim</label>
-            <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            <Input type="date" value={endDate} onChange={(e) => handleEndDateChange(e.target.value)} />
           </div>
         </div>
       </div>
@@ -445,7 +437,7 @@ export default function TransactionsPage() {
                         tx.type === 'income' ? 'text-emerald-500' : 'text-rose-500'
                       }`}
                     >
-                      {tx.type === 'income' ? '+' : '-'} {formatCurrency(tx.amount)}
+                      {tx.type === 'income' ? '+' : '-'} {formatCurrencyBRL(tx.amount)}
                     </td>
                     <td className="p-4 flex items-center justify-center gap-2">
                       <button
@@ -474,23 +466,22 @@ export default function TransactionsPage() {
           </table>
         </div>
 
-        {/* Paginação */}
         {totalPages > 1 && (
           <div className="p-4 border-t border-border/50 flex items-center justify-between text-xs text-muted-foreground bg-card/10 select-none">
             <span>
-              Página {currentPage} de {totalPages}
+              Página {safeCurrentPage} de {totalPages}
             </span>
             <div className="flex items-center gap-1">
               <button
-                disabled={currentPage === 1}
-                onClick={() => setCurrentPage(prev => prev - 1)}
+                disabled={safeCurrentPage === 1}
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
                 className="p-1.5 border border-border rounded-lg hover:bg-accent disabled:opacity-50 cursor-pointer"
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
               <button
-                disabled={currentPage === totalPages}
-                onClick={() => setCurrentPage(prev => prev + 1)}
+                disabled={safeCurrentPage === totalPages}
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
                 className="p-1.5 border border-border rounded-lg hover:bg-accent disabled:opacity-50 cursor-pointer"
               >
                 <ChevronRight className="h-4 w-4" />
@@ -680,7 +671,7 @@ export default function TransactionsPage() {
         </form>
       </Dialog>
 
-      {/* MODAL IMPORTAR CSV (MAPPER DE COLUNAS) */}
+      {/* MODAL IMPORTAR CSV */}
       <Dialog isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} title="Importar Transações via CSV">
         <div className="space-y-4">
           <div className="border-2 border-dashed border-border/70 rounded-xl p-6 text-center hover:border-primary/50 transition-colors relative cursor-pointer">
@@ -705,7 +696,6 @@ export default function TransactionsPage() {
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                {/* Descrição */}
                 <Select
                   label="Coluna da Descrição"
                   value={descCol}
@@ -719,7 +709,6 @@ export default function TransactionsPage() {
                   ))}
                 </Select>
 
-                {/* Valor */}
                 <Select
                   label="Coluna do Valor"
                   value={amountCol}
@@ -733,7 +722,6 @@ export default function TransactionsPage() {
                   ))}
                 </Select>
 
-                {/* Data */}
                 <Select
                   label="Coluna da Data"
                   value={dateCol}
@@ -747,7 +735,6 @@ export default function TransactionsPage() {
                   ))}
                 </Select>
 
-                {/* Tipo */}
                 <Select
                   label="Coluna do Tipo (Opcional)"
                   value={typeCol}
@@ -761,7 +748,6 @@ export default function TransactionsPage() {
                   ))}
                 </Select>
 
-                {/* Categoria */}
                 <div className="col-span-2">
                   <Select
                     label="Coluna da Categoria (Opcional)"

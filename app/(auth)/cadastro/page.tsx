@@ -61,7 +61,13 @@ export default function CadastroPage() {
       })
 
       if (error) {
-        setErrorMsg(error.message)
+        if (error.status === 400 || error.status === 422) {
+          setErrorMsg('E-mail inválido ou já cadastrado.')
+        } else if (error.status === 401 || error.status === 403) {
+          setErrorMsg('Não foi possível registrar o usuário. Erro de permissão.')
+        } else {
+          setErrorMsg(error.message)
+        }
       } else {
         setSuccessMsg('Cadastro realizado com sucesso! Redirecionando...')
         setTimeout(() => {

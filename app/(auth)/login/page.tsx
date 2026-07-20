@@ -47,9 +47,11 @@ export default function LoginPage() {
       })
 
       if (error) {
-        setErrorMsg(error.message === 'Invalid login credentials' 
-          ? 'E-mail ou senha incorretos.' 
-          : error.message)
+        if (error.status === 401 || error.status === 403 || error.message.includes('credentials')) {
+          setErrorMsg('E-mail ou senha incorretos.')
+        } else {
+          setErrorMsg('Falha na autenticação. Verifique suas credenciais.')
+        }
       } else {
         router.push('/dashboard')
         router.refresh()

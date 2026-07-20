@@ -11,7 +11,7 @@ import { Category } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog } from '@/components/ui/dialog'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import * as z from 'zod'
 import * as LucideIcons from 'lucide-react'
@@ -21,18 +21,24 @@ import {
   Edit2,
   FolderOpen
 } from 'lucide-react'
+import { formatCurrencyBRL, toDecimal } from '@/lib/finance-math'
 
 // Schema do formulário
 const categorySchema = z.object({
   name: z.string().min(2, 'O nome deve ter no mínimo 2 caracteres'),
   icon: z.string().min(1, 'Selecione um ícone'),
   color: z.string().min(1, 'Selecione uma cor'),
-  budget_limit: z.coerce.number().nullable().optional(),
+  budget_limit: z.coerce
+    .number()
+    .nullable()
+    .optional()
+    .refine((val) => val === null || val === undefined || isNaN(val) || val > 0, {
+      message: 'O limite de orçamento deve ser um valor maior que zero',
+    }),
 })
 
 type CategoryFormData = z.infer<typeof categorySchema>
 
-// Lista de ícones disponíveis para escolha
 const AVAILABLE_ICONS = [
   'Utensils',
   'Car',
@@ -48,18 +54,17 @@ const AVAILABLE_ICONS = [
   'Gift',
 ]
 
-// Lista de cores disponíveis para escolha
 const AVAILABLE_COLORS = [
-  '#EF4444', // Vermelho
-  '#3B82F6', // Azul
-  '#10B981', // Verde
-  '#F59E0B', // Amarelo
-  '#8B5CF6', // Roxo
-  '#EC4899', // Rosa
-  '#06B6D4', // Ciano
-  '#F97316', // Laranja
-  '#14B8A6', // Teal
-  '#64748B', // Slate
+  '#EF4444',
+  '#3B82F6',
+  '#10B981',
+  '#F59E0B',
+  '#8B5CF6',
+  '#EC4899',
+  '#06B6D4',
+  '#F97316',
+  '#14B8A6',
+  '#64748B',
 ]
 
 export default function CategoriesPage() {
@@ -79,7 +84,8 @@ export default function CategoriesPage() {
     handleSubmit,
     reset,
     setValue,
-    watch,
+    control,
+    formState: { errors },
   } = useForm({
     resolver: zodResolver(categorySchema),
     defaultValues: {
@@ -90,8 +96,8 @@ export default function CategoriesPage() {
     },
   })
 
-  const selectedIcon = watch('icon')
-  const selectedColor = watch('color')
+  const selectedIcon = useWatch({ control, name: 'icon' })
+  const selectedColor = useWatch({ control, name: 'color' })
 
   const openAddModal = () => {
     reset({
@@ -120,11 +126,11 @@ export default function CategoriesPage() {
         name: data.name,
         icon: data.icon,
         color: data.color,
-        budget_limit: data.budget_limit ? Number(data.budget_limit) : null,
+        budget_limit: data.budget_limit ? toDecimal(data.budget_limit).abs().toNumber() : null,
       })
       setIsAddOpen(false)
-    } catch (e) {
-      console.error(e)
+    } catch {
+      // Silencioso sem console.log
     }
   }
 
@@ -136,11 +142,11 @@ export default function CategoriesPage() {
         name: data.name,
         icon: data.icon,
         color: data.color,
-        budget_limit: data.budget_limit ? Number(data.budget_limit) : null,
+        budget_limit: data.budget_limit ? toDecimal(data.budget_limit).abs().toNumber() : null,
       })
       setIsEditOpen(false)
-    } catch (e) {
-      console.error(e)
+    } catch {
+      // Silencioso sem console.log
     }
   }
 
@@ -149,26 +155,19 @@ export default function CategoriesPage() {
       alert('Categorias padrão do sistema não podem ser excluídas.')
       return
     }
-    if (confirm(`Deseja realmente excluir a categoria "${cat.name}"? Transações desta categoria ficarão marcadas como "Sem Categoria".`)) {
+    if (confirm(`Deseja realmente arquivar a categoria "${cat.name}"? Transações desta categoria serão preservadas.`)) {
       try {
         await deleteCatMutation.mutateAsync(cat.id)
-      } catch (e) {
-        console.error(e)
+      } catch {
+        // Silencioso sem console.log
       }
     }
   }
 
-  // Renderizar o ícone de forma dinâmica com segurança
   const renderIcon = (iconName: string, color: string, className = 'h-5 w-5') => {
     // @ts-expect-error: Lucide dynamic icon indexing
     const IconComponent = LucideIcons[iconName] || LucideIcons.Tags
     return <IconComponent className={className} style={{ color }} />
-  }
-
-  // Formatar BRL
-  const formatCurrency = (value: number | null) => {
-    if (value === null || value === undefined) return 'Não definido'
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)
   }
 
   return (
@@ -241,7 +240,7 @@ export default function CategoriesPage() {
               <div className="space-y-1 select-none">
                 <span className="text-xs text-muted-foreground">Limite do Orçamento</span>
                 <p className="text-sm font-bold">
-                  {cat.budget_limit ? formatCurrency(cat.budget_limit) : 'Sem limite definido'}
+                  {cat.budget_limit ? formatCurrencyBRL(cat.budget_limit) : 'Sem limite definido'}
                 </p>
               </div>
             </div>
@@ -260,17 +259,19 @@ export default function CategoriesPage() {
           <Input
             label="Nome da Categoria"
             placeholder="Ex: Assinaturas, Delivery..."
+            error={errors.name?.message}
             {...register('name')}
           />
 
           <Input
             label="Limite de Orçamento Mensal (Opcional)"
             type="number"
+            step="0.01"
             placeholder="Deixe em branco para ilimitado"
+            error={errors.budget_limit?.message}
             {...register('budget_limit')}
           />
 
-          {/* Seleção de Cores */}
           <div className="space-y-1.5 select-none">
             <label className="text-sm font-medium text-foreground/80 leading-none">Cor Representativa</label>
             <div className="flex flex-wrap gap-2.5 pt-1">
@@ -288,7 +289,6 @@ export default function CategoriesPage() {
             </div>
           </div>
 
-          {/* Seleção de Ícone */}
           <div className="space-y-1.5 select-none">
             <label className="text-sm font-medium text-foreground/80 leading-none">Ícone</label>
             <div className="grid grid-cols-6 gap-2 pt-1 border border-border/50 rounded-xl p-3 bg-card/25 max-h-[140px] overflow-y-auto">
@@ -326,17 +326,19 @@ export default function CategoriesPage() {
           <Input
             label="Nome da Categoria"
             placeholder="Ex: Delivery..."
+            error={errors.name?.message}
             {...register('name')}
           />
 
           <Input
             label="Limite de Orçamento Mensal (Opcional)"
             type="number"
+            step="0.01"
             placeholder="Deixe em branco para ilimitado"
+            error={errors.budget_limit?.message}
             {...register('budget_limit')}
           />
 
-          {/* Seleção de Cores */}
           <div className="space-y-1.5 select-none">
             <label className="text-sm font-medium text-foreground/80 leading-none">Cor Representativa</label>
             <div className="flex flex-wrap gap-2.5 pt-1">
@@ -354,7 +356,6 @@ export default function CategoriesPage() {
             </div>
           </div>
 
-          {/* Seleção de Ícone */}
           <div className="space-y-1.5 select-none">
             <label className="text-sm font-medium text-foreground/80 leading-none">Ícone</label>
             <div className="grid grid-cols-6 gap-2 pt-1 border border-border/50 rounded-xl p-3 bg-card/25 max-h-[140px] overflow-y-auto">
