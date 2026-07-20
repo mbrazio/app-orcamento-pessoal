@@ -109,14 +109,59 @@ export default function ReportsPage() {
     setExportError(null)
 
     await new Promise((resolve) => setTimeout(resolve, 300))
+    const fileName = `relatorio-FinanceFlow-${Number(selectedMonth) + 1}-${selectedYear}.pdf`
 
     try {
       const isLight = document.documentElement.classList.contains('light')
+      
       const canvas = await html2canvas(element, {
         scale: 2,
         useCORS: true,
-        backgroundColor: isLight ? '#ffffff' : '#0a0a0a',
+        backgroundColor: isLight ? '#ffffff' : '#0f0f14',
         logging: false,
+        onclone: (clonedDoc) => {
+          const clonedEl = clonedDoc.getElementById('report-content')
+          if (!clonedEl) return
+
+          const canvasCtx = document.createElement('canvas').getContext('2d')
+          const allElements = [clonedEl, ...Array.from(clonedEl.querySelectorAll('*'))]
+
+          allElements.forEach((node) => {
+            const el = node as HTMLElement
+            el.style.backdropFilter = 'none'
+
+            if (canvasCtx) {
+              const compStyle = window.getComputedStyle(el)
+              
+              if (compStyle.backgroundColor && compStyle.backgroundColor !== 'transparent' && compStyle.backgroundColor !== 'rgba(0, 0, 0, 0)') {
+                try {
+                  canvasCtx.fillStyle = compStyle.backgroundColor
+                  el.style.backgroundColor = canvasCtx.fillStyle
+                } catch {
+                  el.style.backgroundColor = isLight ? '#ffffff' : '#1a1a24'
+                }
+              }
+
+              if (compStyle.color) {
+                try {
+                  canvasCtx.fillStyle = compStyle.color
+                  el.style.color = canvasCtx.fillStyle
+                } catch {
+                  el.style.color = isLight ? '#000000' : '#ffffff'
+                }
+              }
+
+              if (compStyle.borderColor) {
+                try {
+                  canvasCtx.fillStyle = compStyle.borderColor
+                  el.style.borderColor = canvasCtx.fillStyle
+                } catch {
+                  el.style.borderColor = isLight ? '#e5e7eb' : '#27272a'
+                }
+              }
+            }
+          })
+        },
       })
 
       const imgData = canvas.toDataURL('image/png')
@@ -125,12 +170,10 @@ export default function ReportsPage() {
       const imgHeight = (canvas.height * imgWidth) / canvas.width
       
       pdf.addImage(imgData, 'PNG', 10, 10, imgWidth, imgHeight)
-      
-      const fileName = `relatorio-FinanceFlow-${Number(selectedMonth) + 1}-${selectedYear}.pdf`
+
       const pdfBlob = pdf.output('blob')
       const blobUrl = URL.createObjectURL(pdfBlob)
 
-      // 1. Criar e acionar âncora de download no DOM
       const link = document.createElement('a')
       link.href = blobUrl
       link.download = fileName
@@ -139,13 +182,73 @@ export default function ReportsPage() {
       link.click()
       setTimeout(() => document.body.removeChild(link), 1000)
 
-      // 2. Salvar link visível no DOM para inspeções de automação de teste e acesso alternativo
       setDownloadLink({ url: blobUrl, filename: fileName })
-
-      // 3. Método padrão de salvamento do jsPDF
       pdf.save(fileName)
     } catch {
-      setExportError('Não foi possível gerar o PDF. Tente novamente.')
+      // FALLBACK NATIVO DO JSPDF SE HTML2CANVAS FALHAR POR COMPATIBILIDADE DE CSS OU RENDERIZADOR
+      try {
+        const pdf = new jsPDF('p', 'mm', 'a4')
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(16)
+        pdf.text('FinanceFlow - Relatório Financeiro Mensal', 14, 20)
+        
+        pdf.setFontSize(10)
+        pdf.setFont('helvetica', 'normal')
+        pdf.text(`Período: ${currentMonthLabel} de ${selectedYear}`, 14, 28)
+        pdf.text(`Emitido em: ${now.toLocaleDateString('pt-BR')}`, 14, 34)
+
+        pdf.setLineWidth(0.5)
+        pdf.line(14, 38, 196, 38)
+
+        pdf.setFontSize(11)
+        pdf.setFont('helvetica', 'bold')
+        pdf.text(`Receitas Totais: ${formatCurrencyBRL(totalIncomeDec)}`, 14, 48)
+        pdf.text(`Despesas Totais: ${formatCurrencyBRL(totalExpenseDec)}`, 14, 56)
+        pdf.text(`Saldo Líquido: ${formatCurrencyBRL(balanceDec)}`, 14, 64)
+        pdf.text(`Taxa de Economia: ${savingsRate.toFixed(1)}%`, 14, 72)
+
+        pdf.line(14, 78, 196, 78)
+
+        pdf.setFontSize(12)
+        pdf.text('Histórico de Transações:', 14, 88)
+
+        let yPos = 98
+        pdf.setFontSize(9)
+        pdf.setFont('helvetica', 'bold')
+        pdf.text('Data', 14, yPos)
+        pdf.text('Descrição', 40, yPos)
+        pdf.text('Categoria', 110, yPos)
+        pdf.text('Valor', 165, yPos)
+
+        pdf.setFont('helvetica', 'normal')
+        filteredTxs.forEach((tx) => {
+          yPos += 7
+          if (yPos > 270) {
+            pdf.addPage()
+            yPos = 20
+          }
+          pdf.text(formatDate(tx.date), 14, yPos)
+          pdf.text(tx.description.substring(0, 30), 40, yPos)
+          pdf.text((tx.categories?.name || 'Sem Categoria').substring(0, 20), 110, yPos)
+          pdf.text(`${tx.type === 'income' ? '+' : '-'} ${formatCurrencyBRL(tx.amount)}`, 165, yPos)
+        })
+
+        const pdfBlob = pdf.output('blob')
+        const blobUrl = URL.createObjectURL(pdfBlob)
+
+        const link = document.createElement('a')
+        link.href = blobUrl
+        link.download = fileName
+        link.style.display = 'none'
+        document.body.appendChild(link)
+        link.click()
+        setTimeout(() => document.body.removeChild(link), 1000)
+
+        setDownloadLink({ url: blobUrl, filename: fileName })
+        pdf.save(fileName)
+      } catch {
+        setExportError('Não foi possível gerar o PDF. Tente novamente.')
+      }
     } finally {
       setIsExporting(false)
     }
