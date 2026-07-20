@@ -13,7 +13,8 @@ import {
   TrendingDown,
   Percent,
   Wallet,
-  Activity
+  Activity,
+  FileCheck
 } from 'lucide-react'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
@@ -34,6 +35,20 @@ export default function ReportsPage() {
   const [selectedMonth, setSelectedMonth] = React.useState<string>(String(now.getMonth()))
   const [selectedYear, setSelectedYear] = React.useState<string>(String(now.getFullYear()))
   const [isExporting, setIsExporting] = React.useState(false)
+  const [downloadLink, setDownloadLink] = React.useState<{ url: string; filename: string } | null>(null)
+  const [exportError, setExportError] = React.useState<string | null>(null)
+
+  const handleMonthChange = (val: string) => {
+    setSelectedMonth(val)
+    setDownloadLink(null)
+    setExportError(null)
+  }
+
+  const handleYearChange = (val: string) => {
+    setSelectedYear(val)
+    setDownloadLink(null)
+    setExportError(null)
+  }
 
   const { data: transactions = [], isLoading: txLoading } = useTransactions()
   const { isLoading: catLoading } = useCategories()
@@ -91,6 +106,8 @@ export default function ReportsPage() {
     if (!element) return
 
     setIsExporting(true)
+    setExportError(null)
+
     await new Promise((resolve) => setTimeout(resolve, 300))
 
     try {
@@ -99,7 +116,7 @@ export default function ReportsPage() {
         scale: 2,
         useCORS: true,
         backgroundColor: isLight ? '#ffffff' : '#0a0a0a',
-        logging: false
+        logging: false,
       })
 
       const imgData = canvas.toDataURL('image/png')
@@ -109,9 +126,26 @@ export default function ReportsPage() {
       
       pdf.addImage(imgData, 'PNG', 10, 10, imgWidth, imgHeight)
       
-      pdf.save(`relatorio-FinanceFlow-${Number(selectedMonth) + 1}-${selectedYear}.pdf`)
+      const fileName = `relatorio-FinanceFlow-${Number(selectedMonth) + 1}-${selectedYear}.pdf`
+      const pdfBlob = pdf.output('blob')
+      const blobUrl = URL.createObjectURL(pdfBlob)
+
+      // 1. Criar e acionar âncora de download no DOM
+      const link = document.createElement('a')
+      link.href = blobUrl
+      link.download = fileName
+      link.style.display = 'none'
+      document.body.appendChild(link)
+      link.click()
+      setTimeout(() => document.body.removeChild(link), 1000)
+
+      // 2. Salvar link visível no DOM para inspeções de automação de teste e acesso alternativo
+      setDownloadLink({ url: blobUrl, filename: fileName })
+
+      // 3. Método padrão de salvamento do jsPDF
+      pdf.save(fileName)
     } catch {
-      // Silencioso sem console.log
+      setExportError('Não foi possível gerar o PDF. Tente novamente.')
     } finally {
       setIsExporting(false)
     }
@@ -147,7 +181,7 @@ export default function ReportsPage() {
           <Select
             label="Mês do Relatório"
             value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
+            onChange={(e) => handleMonthChange(e.target.value)}
             options={months}
             className="w-40"
           />
@@ -155,17 +189,37 @@ export default function ReportsPage() {
           <Select
             label="Ano do Relatório"
             value={selectedYear}
-            onChange={(e) => setSelectedYear(e.target.value)}
+            onChange={(e) => handleYearChange(e.target.value)}
             options={years}
             className="w-32"
           />
         </div>
 
-        <Button onClick={exportPDF} disabled={isExporting || filteredTxs.length === 0}>
-          <Download className="h-4 w-4 mr-2" />
-          {isExporting ? 'Gerando...' : 'Exportar Relatório PDF'}
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          {downloadLink && (
+            <a
+              id="pdf-download-anchor"
+              href={downloadLink.url}
+              download={downloadLink.filename}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs font-semibold text-emerald-500 hover:bg-emerald-500/20 transition-colors"
+            >
+              <FileCheck className="h-4 w-4" />
+              Baixar {downloadLink.filename}
+            </a>
+          )}
+
+          <Button onClick={exportPDF} disabled={isExporting || filteredTxs.length === 0}>
+            <Download className="h-4 w-4 mr-2" />
+            {isExporting ? 'Gerando...' : 'Exportar Relatório PDF'}
+          </Button>
+        </div>
       </div>
+
+      {exportError && (
+        <div className="rounded-lg bg-danger/10 border border-danger/20 p-3 text-xs text-danger text-center select-none">
+          {exportError}
+        </div>
+      )}
 
       {/* ÁREA DO CONTEÚDO DO RELATÓRIO A SER IMPRESSO */}
       {filteredTxs.length > 0 ? (
